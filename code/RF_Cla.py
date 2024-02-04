@@ -1,4 +1,3 @@
-import numpy as np
 import pandas as pd
 import os
 
@@ -8,6 +7,8 @@ import seaborn as sns
 from sklearn.model_selection import learning_curve
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import confusion_matrix, roc_curve, auc, accuracy_score, classification_report
+from sklearn.model_selection import cross_val_score
+from pyswarm import pso
 
 import numpy as np
 
@@ -55,8 +56,48 @@ X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size=0.2, random_
 
 y_train=np.array(y_train)
 y_test=np.array(y_test)
-# 初始化随机森林模型
-rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+
+# 定义PSO的目标函数，即交叉验证的负准确度（我们希望最小化负准确度）
+def objective_function(params):
+    n_estimators = int(params[0])
+    max_depth = int(params[1])
+    min_samples_split = int(params[2])
+    min_samples_leaf = int(params[3])
+
+    # 创建随机森林模型
+    rf_model = RandomForestClassifier(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        min_samples_split=min_samples_split,
+        min_samples_leaf=min_samples_leaf,
+        random_state=42
+    )
+
+    # 交叉验证
+    scores = cross_val_score(rf_model, X_train, y_train, cv=5, scoring='accuracy')
+
+    # 返回负准确度（PSO最小化目标）
+    return -np.mean(scores)
+
+
+# 定义PSO搜索空间（参数的范围）
+lb = [1, 1, 2, 1]  # 最小值
+ub = [100, 10, 10, 10]  # 最大值
+
+# 使用PSO进行优化
+best_params, _ = pso(objective_function, lb, ub, swarmsize=10, maxiter=50)
+
+# 输出最佳参数
+print("Best Parameters:", best_params)
+
+# 使用最佳参数训练最终模型
+rf_model = RandomForestClassifier(
+    n_estimators=int(best_params[0]),
+    max_depth=int(best_params[1]),
+    min_samples_split=int(best_params[2]),
+    min_samples_leaf=int(best_params[3]),
+    random_state=42
+)
 # 训练模型
 rf_model.fit(X_train, np.ravel(y_train))
 
