@@ -5,6 +5,7 @@ from matplotlib import pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import learning_curve
 from sklearn.ensemble import RandomForestClassifier
+import lightgbm as lgb
 from sklearn.metrics import confusion_matrix, roc_curve, auc, accuracy_score, classification_report
 from sklearn.model_selection import cross_val_score
 from pyswarm import pso
@@ -46,7 +47,7 @@ def read_csv_folder(folder_path):
 # 将特征和目标变量分开
 X=[]
 Y=[]
-t_data=read_csv_folder('match_data')
+t_data=read_csv_folder('match_point')
 
 for data in t_data:
     for d in data['X']:
@@ -72,20 +73,20 @@ y_test = np.array(y_test)
 def objective_function(params):
     n_estimators = int(params[0])
     max_depth = int(params[1])
-    min_samples_split = int(params[2])
-    min_samples_leaf = int(params[3])
+    min_child_samples = int(params[2])
+    min_child_weight = int(params[3])
 
-    # 创建随机森林模型
-    rf_model = RandomForestClassifier(
+    # 创建LGBM模型
+    lgb_model = lgb.LGBMClassifier(
         n_estimators=n_estimators,
         max_depth=max_depth,
-        min_samples_split=min_samples_split,
-        min_samples_leaf=min_samples_leaf,
+        min_child_samples=min_child_samples,
+        min_child_weight=min_child_weight,
         random_state=42
     )
 
     # 交叉验证
-    scores = cross_val_score(rf_model, X_train, np.ravel(y_train), cv=5, scoring='accuracy')
+    scores = cross_val_score(lgb_model, X_train, np.ravel(y_train), cv=5, scoring='accuracy')
 
     # 返回负准确度（PSO最小化目标）
     return -np.mean(scores)
@@ -102,18 +103,18 @@ best_params, _ = pso(objective_function, lb, ub, swarmsize=10, maxiter=50)
 print("Best Parameters:", best_params)
 
 # 使用最佳参数训练最终模型
-rf_model = RandomForestClassifier(
+lgb_model = lgb.LGBMClassifier(
     n_estimators=int(best_params[0]),
     max_depth=int(best_params[1]),
-    min_samples_split=int(best_params[2]),
-    min_samples_leaf=int(best_params[3]),
+    min_child_samples=int(best_params[2]),
+    min_child_weight=int(best_params[3]),
     random_state=42
 )
 # 训练模型
-rf_model.fit(X_train, np.ravel(y_train))
+lgb_model.fit(X_train, np.ravel(y_train))
 
 # 获取特征重要性
-feature_importance = rf_model.feature_importances_
+feature_importance = lgb_model.feature_importances_
 # 假设您有特征名称列表如下：
 feature_names = ['TPW_dif', 'COMPLETE_dif','rank_dif','ATPP_dif','AAG_dif', 'SERVEADV','res_dif','speed','serve_width','serve_depth','return_depth']
 # 将特征重要性与特征名称一起组合
@@ -126,8 +127,8 @@ for feature, importance in sorted_feature_importance:
     print(f"{feature}: {importance}")
 
 # 预测
-y_pred_train=rf_model.predict(X_train)
-y_pred_test = rf_model.predict(X_test)
+y_pred_train=lgb_model.predict(X_train)
+y_pred_test = lgb_model.predict(X_test)
 
 
 # 设置全局绘图参数
@@ -175,11 +176,11 @@ plt.title('Test Confusion Matrix', pad=20)
 plt.show()
 
 # 获取训练集 ROC 曲线数据
-fpr_train, tpr_train, thresholds_train = roc_curve(y_train, rf_model.predict_proba(X_train)[:, 1])
+fpr_train, tpr_train, thresholds_train = roc_curve(y_train, lgb_model.predict_proba(X_train)[:, 1])
 roc_auc_train = auc(fpr_train, tpr_train)
 
 # 获取测试集 ROC 曲线数据
-fpr_test, tpr_test, thresholds_test = roc_curve(y_test, rf_model.predict_proba(X_test)[:, 1])
+fpr_test, tpr_test, thresholds_test = roc_curve(y_test, lgb_model.predict_proba(X_test)[:, 1])
 roc_auc_test = auc(fpr_test, tpr_test)
 
 # 绘制训练集 ROC 曲线
@@ -204,7 +205,7 @@ plt.show()
 
 # 学习曲线
 train_sizes, train_scores, test_scores = learning_curve(
-    rf_model, X_train, np.ravel(y_train), cv=5, scoring='accuracy', train_sizes=np.linspace(0.1, 1.0, 10)
+    lgb_model, X_train, np.ravel(y_train), cv=5, scoring='accuracy', train_sizes=np.linspace(0.1, 1.0, 10)
 )
 
 # 计算平均值和标准差
@@ -215,10 +216,10 @@ test_std = np.std(test_scores, axis=1)
 
 # 绘制学习曲线
 plt.figure()
-plt.plot(train_sizes, train_mean, color='blue', marker='o', linewidth=2, markersize=10, label='Training Accuracy')
+plt.plot(train_sizes, train_mean, color='blue', marker='o', linewidth=4, markersize=20, label='Training Accuracy')
 plt.fill_between(train_sizes, train_mean - train_std, train_mean + train_std, alpha=0.15, color='blue')
 
-plt.plot(train_sizes, test_mean, color='green', linestyle='--', linewidth=2, marker='s', markersize=10, label='Validation Accuracy')
+plt.plot(train_sizes, test_mean, color='green', linestyle='--', linewidth=4, marker='s', markersize=20, label='Validation Accuracy')
 plt.fill_between(train_sizes, test_mean - test_std, test_mean + test_std, alpha=0.15, color='green')
 
 plt.xlabel('Training Examples')
@@ -229,10 +230,6 @@ plt.tight_layout()
 plt.show()
 
 # 绘制特征重要性柱状图
-# 设置图片大小
-plt.figure()
-
-# 绘制横向特征重要性柱状图
 # 分离特征名称和重要性值
 features, importances = zip(*sorted_feature_importance)
 # 创建横向柱状图，并根据重要性渐变颜色

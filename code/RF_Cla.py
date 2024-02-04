@@ -7,8 +7,6 @@ import seaborn as sns
 from sklearn.model_selection import learning_curve
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import confusion_matrix, roc_curve, auc, accuracy_score, classification_report
-from sklearn.model_selection import cross_val_score
-from pyswarm import pso
 
 import numpy as np
 
@@ -29,8 +27,8 @@ def read_csv_folder(folder_path):
         data = pd.read_csv(file_path)
 
         # 从数据中提取X和Y
-        X = data.iloc[:, :6].values
-        Y = data.iloc[:, 6].values.reshape(-1, 1)
+        X = data.iloc[:, :11].values
+        Y = data.iloc[:, 11].values.reshape(-1, 1)
 
         # 构造数据字典
         data_dict = {'X': X, 'Y': Y}
@@ -43,7 +41,7 @@ def read_csv_folder(folder_path):
 # 将特征和目标变量分开
 X=[]
 Y=[]
-t_data=read_csv_folder('train_data')
+t_data=read_csv_folder('match_data')
 
 for data in t_data:
     for d in data['X']:
@@ -57,46 +55,9 @@ X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size=0.2, random_
 y_train=np.array(y_train)
 y_test=np.array(y_test)
 
-# 定义PSO的目标函数，即交叉验证的负准确度（我们希望最小化负准确度）
-def objective_function(params):
-    n_estimators = int(params[0])
-    max_depth = int(params[1])
-    min_samples_split = int(params[2])
-    min_samples_leaf = int(params[3])
-
-    # 创建随机森林模型
-    rf_model = RandomForestClassifier(
-        n_estimators=n_estimators,
-        max_depth=max_depth,
-        min_samples_split=min_samples_split,
-        min_samples_leaf=min_samples_leaf,
-        random_state=42
-    )
-
-    # 交叉验证
-    scores = cross_val_score(rf_model, X_train, y_train, cv=5, scoring='accuracy')
-
-    # 返回负准确度（PSO最小化目标）
-    return -np.mean(scores)
-
-
-# 定义PSO搜索空间（参数的范围）
-lb = [1, 1, 2, 1]  # 最小值
-ub = [100, 10, 10, 10]  # 最大值
-
-# 使用PSO进行优化
-best_params, _ = pso(objective_function, lb, ub, swarmsize=10, maxiter=50)
-
-# 输出最佳参数
-print("Best Parameters:", best_params)
-
 # 使用最佳参数训练最终模型
 rf_model = RandomForestClassifier(
-    n_estimators=int(best_params[0]),
-    max_depth=int(best_params[1]),
-    min_samples_split=int(best_params[2]),
-    min_samples_leaf=int(best_params[3]),
-    random_state=42
+    n_estimators=100, random_state=42
 )
 # 训练模型
 rf_model.fit(X_train, np.ravel(y_train))
@@ -104,13 +65,15 @@ rf_model.fit(X_train, np.ravel(y_train))
 # 获取特征重要性
 feature_importance = rf_model.feature_importances_
 # 假设您有特征名称列表如下：
-feature_names = ['g_differ', 'p_differ','p1_ace','p1_fault','p1_dis', 'server']
+feature_names = ['TPW_dif', 'COMPLETE_dif','rank_dif','ATPP_dif','AAG_dif', 'SERVEADV','res_dif','speed','serve_width','serve_depth','return_depth']
 # 将特征重要性与特征名称一起组合
 feature_importance_dict = dict(zip(feature_names, feature_importance))
 
+sorted_feature_importance = sorted(feature_importance_dict.items(), key=lambda x: x[1], reverse=False)
+
 # 打印每个特征对结果的影响
 print("Feature Importance:")
-for feature, importance in feature_importance_dict.items():
+for feature, importance in sorted_feature_importance:
     print(f"{feature}: {importance}")
 
 # 预测
@@ -119,10 +82,10 @@ y_pred_test = rf_model.predict(X_test)
 
 
 # 设置全局绘图参数
-plt.rcParams['figure.figsize'] = (25, 15)
-plt.rcParams['axes.labelsize'] = 30
-plt.rcParams['axes.titlesize'] = 30
-plt.rcParams['font.size'] = 30
+plt.rcParams['figure.figsize'] = (12, 8)
+plt.rcParams['axes.labelsize'] = 15
+plt.rcParams['axes.titlesize'] = 15
+plt.rcParams['font.size'] = 15
 plt.rcParams['font.family'] = 'Times New Roman'
 
 # 计算准确度
@@ -192,7 +155,7 @@ plt.show()
 
 # 学习曲线
 train_sizes, train_scores, test_scores = learning_curve(
-    rf_model, X_train, y_train, cv=5, scoring='accuracy', train_sizes=np.linspace(0.1, 1.0, 10)
+    rf_model, X_train, np.ravel(y_train), cv=5, scoring='accuracy', train_sizes=np.linspace(0.1, 1.0, 10)
 )
 
 # 计算平均值和标准差
@@ -221,11 +184,17 @@ plt.show()
 plt.figure()
 
 # 绘制横向特征重要性柱状图
-plt.barh(feature_names, feature_importance, edgecolor='black')
+# 分离特征名称和重要性值
+features, importances = zip(*sorted_feature_importance)
+# 创建横向柱状图，并根据重要性渐变颜色
+colors = plt.cm.viridis(np.linspace(1, 0, len(features)))  # 使用viridis色图，你可以根据需要更改色图
+
+plt.barh(range(len(features)), importances, color=colors, edgecolor='black')
 plt.xlabel('Importance')
 plt.ylabel('Features')
-plt.title('Feature Importance', pad=20)
-
+plt.title('Feature Importance (Sorted)',pad=20)
+plt.yticks(range(len(features)), features)  # 使用特征名称设置 y 轴标签
+plt.tight_layout()  # 优化布局
 # 添加垂直网格线
 plt.grid(axis='x', linestyle='--', alpha=0.6)
 
