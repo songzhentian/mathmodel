@@ -4,13 +4,16 @@ from sklearn.utils import resample
 from matplotlib import pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import learning_curve
-from sklearn.ensemble import RandomForestClassifier
+import lightgbm as lgb
 from sklearn.metrics import confusion_matrix, roc_curve, auc, accuracy_score, classification_report
 from sklearn.model_selection import cross_val_score
 from pyswarm import pso
 import numpy as np
 import chardet
-
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Flatten, Conv1D, MaxPooling1D
+import shap
 
 # 数据准备
 def read_csv_folder(folder_path):
@@ -72,20 +75,21 @@ y_test = np.array(y_test)
 def objective_function(params):
     n_estimators = int(params[0])
     max_depth = int(params[1])
-    min_samples_split = int(params[2])
-    min_samples_leaf = int(params[3])
+    min_child_samples = int(params[2])
+    min_child_weight = int(params[3])
 
-    # 创建随机森林模型
-    rf_model = RandomForestClassifier(
+    # 创建LGBM模型
+    lgb_model = lgb.LGBMClassifier(
         n_estimators=n_estimators,
         max_depth=max_depth,
-        min_samples_split=min_samples_split,
-        min_samples_leaf=min_samples_leaf,
-        random_state=42
+        min_child_samples=min_child_samples,
+        min_child_weight=min_child_weight,
+        random_state=42,
+        verbosity = 100
     )
 
     # 交叉验证
-    scores = cross_val_score(rf_model, X_train, np.ravel(y_train), cv=5, scoring='accuracy')
+    scores = cross_val_score(lgb_model, X_train, np.ravel(y_train), cv=5, scoring='accuracy')
 
     # 返回负准确度（PSO最小化目标）
     return -np.mean(scores)
@@ -95,40 +99,67 @@ def objective_function(params):
 lb = [10, 3, 2, 1]  # 最小值
 ub = [100, 10, 7, 2]  # 最大值
 
-# 使用PSO进行优化
-best_params, _ = pso(objective_function, lb, ub, swarmsize=10, maxiter=50)
+# # 使用PSO进行优化
+# best_params, _ = pso(objective_function, lb, ub, swarmsize=10, maxiter=50)
+#
+# # 输出最佳参数
+# print("Best Parameters:", best_params)
+#
+# # 使用最佳参数训练最终模型
+# lgb_model = lgb.LGBMClassifier(
+#     n_estimators=int(best_params[0]),
+#     max_depth=int(best_params[1]),
+#     min_child_samples=int(best_params[2]),
+#     min_child_weight=int(best_params[3]),
+#     random_state=42,
+#     verbosity = 100
+# )
 
-# 输出最佳参数
-print("Best Parameters:", best_params)
-
-# 使用最佳参数训练最终模型
-rf_model = RandomForestClassifier(
-    n_estimators=int(best_params[0]),
-    max_depth=int(best_params[1]),
-    min_samples_split=int(best_params[2]),
-    min_samples_leaf=int(best_params[3]),
-    random_state=42
+lgb_model = lgb.LGBMClassifier(
+    n_estimators=100,         # 迭代次数
+    learning_rate=0.05,        # 学习率
+    max_depth=3,               # 每棵树的最大深度
+    min_child_samples=20,      # 每个叶子节点最少样本数
+    min_child_weight=0.001,    # 每个叶子节点的最小权重
+    subsample=0.8,             # 每次迭代中随机选择部分数据的比例
+    colsample_bytree=0.9,      # 每次迭代中随机选择特征的比例
+    reg_alpha=0,               # L1 正则化项
+    reg_lambda=0,              # L2 正则化项
+    random_state=42,           # 随机种子，用于可复现性
+    verbosity = 100
 )
 # 训练模型
-rf_model.fit(X_train, np.ravel(y_train))
+lgb_model.fit(X_train, np.ravel(y_train))
+lgb_train_features = lgb_model.predict(X_train, pred_leaf=True)
+lgb_test_features = lgb_model.predict(X_test, pred_leaf=True)
+# 将LightGBM的预测结果作为新的特征，与原始特征合并
+X_train_combined = np.concatenate([X_train, lgb_train_features], axis=1)
+X_test_combined = np.concatenate([X_test, lgb_test_features], axis=1)
 
-# 获取特征重要性
-feature_importance = rf_model.feature_importances_
-# 假设您有特征名称列表如下：
-feature_names = ['TPW_dif', 'COMPLETE_dif','rank_dif','ATPP_dif','AAG_dif', 'SERVEADV','res_dif','speed','serve_width','serve_depth','return_depth']
-# 将特征重要性与特征名称一起组合
-feature_importance_dict = dict(zip(feature_names, feature_importance))
-sorted_feature_importance = sorted(feature_importance_dict.items(), key=lambda x: x[1], reverse=False)
+# 定义CNN模型
+cnn_model = Sequential([
+    Conv1D(32, kernel_size=3, activation='relu', input_shape=(X_train_combined.shape[1], 1)),
+    MaxPooling1D(pool_size=2),
+    Flatten(),
+    Dense(64, activation='relu'),
+    Dense(1, activation='sigmoid')
+])
 
-# 打印每个特征对结果的影响
-print("Feature Importance:")
-for feature, importance in sorted_feature_importance:
-    print(f"{feature}: {importance}")
+# 编译CNN模型
+cnn_model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
 
-# 预测
-y_pred_train=rf_model.predict(X_train)
-y_pred_test = rf_model.predict(X_test)
+# 将数据reshape成适合CNN输入的形状
+X_train_combined_reshaped = tf.reshape(X_train_combined, (X_train_combined.shape[0], X_train_combined.shape[1], 1))
+X_test_combined_reshaped = tf.reshape(X_test_combined, (X_test_combined.shape[0], X_test_combined.shape[1], 1))
 
+# 训练CNN模型
+history=cnn_model.fit(X_train_combined_reshaped, y_train, epochs=15, validation_data=(X_test_combined_reshaped, y_test))
+
+# 使用CNN模型进行预测
+y_pred_train = cnn_model.predict(X_train_combined_reshaped)
+y_pred_train = tf.argmax(y_pred_train, axis=1)
+y_pred_test = cnn_model.predict(X_test_combined_reshaped)
+y_pred_test = tf.argmax(y_pred_test, axis=1)
 
 # 设置全局绘图参数
 plt.rcParams['figure.figsize'] = (12, 8)
@@ -136,6 +167,25 @@ plt.rcParams['axes.labelsize'] = 15
 plt.rcParams['axes.titlesize'] = 15
 plt.rcParams['font.size'] = 15
 plt.rcParams['font.family'] = 'Times New Roman'
+
+# plt.plot(history["loss"])
+# plt.title("Loss")
+# plt.ylabel("Loss")
+# plt.xlabel("Epoch")
+# plt.legend(["Train", "Test"])
+# plt.show()
+
+# 获取 SHAP 值
+explainer = shap.DeepExplainer(cnn_model, X_train_combined_reshaped)
+shap_values = explainer.shap_values(X_train_combined_reshaped)
+
+# 汇总 SHAP 值（对于多个特征的情况，可根据需要选择合适的聚合方式）
+shap_summary_values = np.abs(shap_values).mean(axis=0)
+
+# 可视化 SHAP 摘要图
+feature_names = ['TPW_dif', 'COMPLETE_dif','rank_dif','ATPP_dif','AAG_dif', 'SERVEADV','res_dif','speed','serve_width','serve_depth','return_depth']
+shap.summary_plot(shap_values, features=X_train_combined_reshaped, feature_names=feature_names)
+
 
 # 计算准确度
 accuracy_train = accuracy_score(y_train, y_pred_train)
@@ -175,11 +225,11 @@ plt.title('Test Confusion Matrix', pad=20)
 plt.show()
 
 # 获取训练集 ROC 曲线数据
-fpr_train, tpr_train, thresholds_train = roc_curve(y_train, rf_model.predict_proba(X_train)[:, 1])
+fpr_train, tpr_train, thresholds_train = roc_curve(y_train, lgb_model.predict_proba(X_train)[:, 1])
 roc_auc_train = auc(fpr_train, tpr_train)
 
 # 获取测试集 ROC 曲线数据
-fpr_test, tpr_test, thresholds_test = roc_curve(y_test, rf_model.predict_proba(X_test)[:, 1])
+fpr_test, tpr_test, thresholds_test = roc_curve(y_test, lgb_model.predict_proba(X_test)[:, 1])
 roc_auc_test = auc(fpr_test, tpr_test)
 
 # 绘制训练集 ROC 曲线
@@ -202,9 +252,9 @@ plt.title('Test Receiver Operating Characteristic', pad=20)
 plt.legend(loc="lower right")
 plt.show()
 
-# 学习曲线
+# LGBM学习曲线
 train_sizes, train_scores, test_scores = learning_curve(
-    rf_model, X_train, np.ravel(y_train), cv=5, scoring='accuracy', train_sizes=np.linspace(0.1, 1.0, 10)
+    lgb_model, X_train, np.ravel(y_train), cv=5, scoring='accuracy', train_sizes=np.linspace(0.1, 1.0, 10)
 )
 
 # 计算平均值和标准差
@@ -223,29 +273,17 @@ plt.fill_between(train_sizes, test_mean - test_std, test_mean + test_std, alpha=
 
 plt.xlabel('Training Examples')
 plt.ylabel('Accuracy')
-plt.title('Random Forest Learning Curve', pad=20)
+plt.title('LGBM Learning Curve', pad=20)
 plt.legend(loc='lower right')
 plt.tight_layout()
 plt.show()
 
-# 绘制特征重要性柱状图
-# 设置图片大小
-plt.figure()
-
-# 绘制横向特征重要性柱状图
-# 分离特征名称和重要性值
-features, importances = zip(*sorted_feature_importance)
-# 创建横向柱状图，并根据重要性渐变颜色
-colors = plt.cm.viridis(np.linspace(1, 0, len(features)))  # 使用viridis色图，你可以根据需要更改色图
-
-plt.barh(range(len(features)), importances, color=colors, edgecolor='black')
-plt.xlabel('Importance')
-plt.ylabel('Features')
-plt.title('Feature Importance (Sorted)',pad=20)
-plt.yticks(range(len(features)), features)  # 使用特征名称设置 y 轴标签
-plt.tight_layout()  # 优化布局
-# 添加垂直网格线
-plt.grid(axis='x', linestyle='--', alpha=0.6)
-
-plt.tight_layout()  # 保证标签显示完整
+# CNN获取学习曲线数据
+# 绘制学习曲线
+plt.plot(history.history['accuracy'], label='Training Accuracy', marker='o', linewidth=2, markersize=10)
+plt.plot(history.history['val_accuracy'], label='Validation Accuracy', marker='s', linestyle='--', linewidth=2, markersize=10)
+plt.xlabel('Epochs')
+plt.ylabel('Accuracy')
+plt.title('CNN Learning Curve', pad=20)
+plt.legend()
 plt.show()
